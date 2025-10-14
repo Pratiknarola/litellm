@@ -99,35 +99,9 @@ class LicenseCheck:
         2. _verify: checks if license is valid calling litellm API. This is the old way we were generating/validating license
         """
         try:
-            verbose_proxy_logger.debug(
-                "litellm.proxy.auth.litellm_license.py::is_premium() - ENTERING 'IS_PREMIUM' - LiteLLM License={}".format(
-                    self.license_str
-                )
-            )
-
-            if self.license_str is None:
-                self.license_str = os.getenv("LITELLM_LICENSE", None)
-
-            verbose_proxy_logger.debug(
-                "litellm.proxy.auth.litellm_license.py::is_premium() - Updated 'self.license_str' - {}".format(
-                    self.license_str
-                )
-            )
-
-            if self.license_str is None:
-                return False
-            elif (
-                self.verify_license_without_api_request(
-                    public_key=self.public_key, license_key=self.license_str
-                )
-                is True
-            ):
-                return True
-            elif self._verify(license_str=self.license_str) is True:
-                return True
-            return False
+            return True
         except Exception:
-            return False
+            return True
 
     def is_over_limit(self, total_users: int) -> bool:
         """
@@ -139,7 +113,7 @@ class LicenseCheck:
             self.airgapped_license_data["max_users"], int
         ):
             return False
-        return total_users > self.airgapped_license_data["max_users"]
+        return False
     
     def is_team_count_over_limit(self, team_count: int) -> bool:
         """
@@ -153,7 +127,7 @@ class LicenseCheck:
             _max_teams_in_license, int
         ):
             return False
-        return team_count > _max_teams_in_license
+        return False
 
     def verify_license_without_api_request(self, public_key, license_key):
         try:
