@@ -674,7 +674,7 @@ class OpenAIChatCompletionAssistantMessage(TypedDict, total=False):
 
 class ChatCompletionAssistantMessage(OpenAIChatCompletionAssistantMessage, total=False):
     cache_control: ChatCompletionCachedContent
-    thinking_blocks: Optional[List[ChatCompletionThinkingBlock]]
+    thinking_blocks: Optional[List[Union[ChatCompletionThinkingBlock, ChatCompletionRedactedThinkingBlock]]]
 
 
 class ChatCompletionToolMessage(TypedDict):
@@ -1035,6 +1035,15 @@ class ResponseAPIUsage(BaseLiteLLMOpenAIResponseObject):
     """The cost of the request."""
 
     model_config = {"extra": "allow"}
+
+
+ResponsesAPIStatus = Literal[
+    "completed", "failed", "in_progress", "cancelled", "queued", "incomplete"
+]
+"""
+The status of the response generation.
+One of: completed, failed, in_progress, cancelled, queued, or incomplete.
+"""
 
 
 class ResponsesAPIResponse(BaseLiteLLMOpenAIResponseObject):
@@ -1399,11 +1408,18 @@ class ImageGenerationPartialImageEvent(BaseLiteLLMOpenAIResponseObject):
     b64_json: str
 
 
-class ErrorEvent(BaseLiteLLMOpenAIResponseObject):
-    type: Literal[ResponsesAPIStreamEvents.ERROR]
-    code: Optional[str]
+class ErrorEventError(BaseLiteLLMOpenAIResponseObject):
+    """Nested error object within ErrorEvent"""
+    type: str  # e.g., 'invalid_request_error'
+    code: str  # e.g., 'context_length_exceeded'
     message: str
     param: Optional[str]
+
+
+class ErrorEvent(BaseLiteLLMOpenAIResponseObject):
+    type: Literal[ResponsesAPIStreamEvents.ERROR]
+    sequence_number: int
+    error: ErrorEventError
 
 
 class GenericEvent(BaseLiteLLMOpenAIResponseObject):

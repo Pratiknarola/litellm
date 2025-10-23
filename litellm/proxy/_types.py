@@ -323,6 +323,14 @@ class LiteLLMRoutes(enum.Enum):
         "/v1/vector_stores",
         "/vector_stores/{vector_store_id}/search",
         "/v1/vector_stores/{vector_store_id}/search",
+
+        # search
+        "/search",
+        "/v1/search",
+
+        # OCR
+        "/ocr",
+        "/v1/ocr",
     ]
 
     mapped_pass_through_routes = [
@@ -779,10 +787,10 @@ class KeyRequestBase(GenerateRequestBase):
     allowed_routes: Optional[list] = []
     allowed_passthrough_routes: Optional[list] = None
     rpm_limit_type: Optional[
-        Literal["guaranteed_throughput", "best_effort_throughput"]
+        Literal["guaranteed_throughput", "best_effort_throughput", "dynamic"]
     ] = None  # raise an error if 'guaranteed_throughput' is set and we're overallocating rpm
     tpm_limit_type: Optional[
-        Literal["guaranteed_throughput", "best_effort_throughput"]
+        Literal["guaranteed_throughput", "best_effort_throughput", "dynamic"]
     ] = None  # raise an error if 'guaranteed_throughput' is set and we're overallocating tpm
 
 
@@ -1284,6 +1292,8 @@ class NewTeamRequest(TeamBase):
     prompts: Optional[List[str]] = None
     object_permission: Optional[LiteLLM_ObjectPermissionBase] = None
     allowed_passthrough_routes: Optional[list] = None
+    model_rpm_limit: Optional[Dict[str, int]] = None
+    model_tpm_limit: Optional[Dict[str, int]] = None
     team_member_budget: Optional[float] = (
         None  # allow user to set a budget for all team members
     )
@@ -1340,6 +1350,8 @@ class UpdateTeamRequest(LiteLLMPydanticObjectBase):
     team_member_tpm_limit: Optional[int] = None
     team_member_key_duration: Optional[str] = None
     allowed_passthrough_routes: Optional[list] = None
+    model_rpm_limit: Optional[Dict[str, int]] = None
+    model_tpm_limit: Optional[Dict[str, int]] = None
 
 
 class ResetTeamBudgetRequest(LiteLLMPydanticObjectBase):
@@ -1615,6 +1627,10 @@ class PassThroughGenericEndpoint(LiteLLMPydanticObjectBase):
     cost_per_request: float = Field(
         default=0.0,
         description="The USD cost per request to the target endpoint. This is used to calculate the cost of the request to the target endpoint.",
+    )
+    auth: bool = Field(
+        default=False,
+        description="Whether authentication is required for the pass-through endpoint. If True, requests to the endpoint will require a valid LiteLLM API key.",
     )
 
 

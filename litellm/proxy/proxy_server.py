@@ -253,13 +253,18 @@ from litellm.proxy.management_endpoints.callback_management_endpoints import (
     router as callback_management_endpoints_router,
 )
 from litellm.proxy.management_endpoints.common_utils import _user_has_admin_view
+from litellm.proxy.management_endpoints.cost_tracking_settings import (
+    router as cost_tracking_settings_router,
+)
 from litellm.proxy.management_endpoints.customer_endpoints import (
     router as customer_router,
 )
 from litellm.proxy.management_endpoints.internal_user_endpoints import (
     router as internal_user_router,
 )
-from litellm.proxy.management_endpoints.internal_user_endpoints import user_update
+from litellm.proxy.management_endpoints.internal_user_endpoints import (
+    user_update,
+)
 from litellm.proxy.management_endpoints.key_management_endpoints import (
     delete_verification_tokens,
     duration_in_seconds,
@@ -303,10 +308,13 @@ from litellm.proxy.management_endpoints.user_agent_analytics_endpoints import (
 )
 from litellm.proxy.management_helpers.audit_logs import create_audit_log_for_update
 from litellm.proxy.middleware.prometheus_auth_middleware import PrometheusAuthMiddleware
+from litellm.proxy.ocr_endpoints.endpoints import router as ocr_router
 from litellm.proxy.openai_files_endpoints.files_endpoints import (
     router as openai_files_router,
 )
-from litellm.proxy.openai_files_endpoints.files_endpoints import set_files_config
+from litellm.proxy.openai_files_endpoints.files_endpoints import (
+    set_files_config,
+)
 from litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints import (
     passthrough_endpoint_router,
 )
@@ -327,6 +335,7 @@ from litellm.proxy.public_endpoints import router as public_endpoints_router
 from litellm.proxy.rerank_endpoints.endpoints import router as rerank_router
 from litellm.proxy.response_api_endpoints.endpoints import router as response_router
 from litellm.proxy.route_llm_request import route_request
+from litellm.proxy.search_endpoints.endpoints import router as search_router
 from litellm.proxy.spend_tracking.cloudzero_endpoints import router as cloudzero_router
 from litellm.proxy.spend_tracking.spend_management_endpoints import (
     router as spend_management_router,
@@ -390,7 +399,11 @@ from litellm.types.proxy.management_endpoints.ui_sso import (
 from litellm.types.realtime import RealtimeQueryParams
 from litellm.types.router import DeploymentTypedDict
 from litellm.types.router import ModelInfo as RouterModelInfo
-from litellm.types.router import RouterGeneralSettings, updateDeployment
+from litellm.types.router import (
+    RouterGeneralSettings,
+    SearchToolTypedDict,
+    updateDeployment,
+)
 from litellm.types.scheduler import DefaultPriorities
 from litellm.types.secret_managers.main import (
     KeyManagementSettings,
@@ -469,9 +482,9 @@ except ImportError:
 server_root_path = os.getenv("SERVER_ROOT_PATH", "")
 _license_check = LicenseCheck()
 premium_user: bool = _license_check.is_premium()
-premium_user_data: Optional["EnterpriseLicenseData"] = (
-    _license_check.airgapped_license_data
-)
+premium_user_data: Optional[
+    "EnterpriseLicenseData"
+] = _license_check.airgapped_license_data
 global_max_parallel_request_retries_env: Optional[str] = os.getenv(
     "LITELLM_GLOBAL_MAX_PARALLEL_REQUEST_RETRIES"
 )
@@ -998,9 +1011,9 @@ worker_config = None
 master_key: Optional[str] = None
 otel_logging = False
 prisma_client: Optional[PrismaClient] = None
-shared_aiohttp_session: Optional["ClientSession"] = (
-    None  # Global shared session for connection reuse
-)
+shared_aiohttp_session: Optional[
+    "ClientSession"
+] = None  # Global shared session for connection reuse
 user_api_key_cache = DualCache(
     default_in_memory_ttl=UserAPIKeyCacheTTLEnum.in_memory_cache_ttl.value
 )
@@ -1008,9 +1021,9 @@ model_max_budget_limiter = _PROXY_VirtualKeyModelMaxBudgetLimiter(
     dual_cache=user_api_key_cache
 )
 litellm.logging_callback_manager.add_litellm_callback(model_max_budget_limiter)
-redis_usage_cache: Optional[RedisCache] = (
-    None  # redis cache used for tracking spend, tpm/rpm limits
-)
+redis_usage_cache: Optional[
+    RedisCache
+] = None  # redis cache used for tracking spend, tpm/rpm limits
 user_custom_auth = None
 user_custom_key_generate = None
 user_custom_sso = None
@@ -1343,9 +1356,9 @@ async def update_cache(  # noqa: PLR0915
         _id = "team_id:{}".format(team_id)
         try:
             # Fetch the existing cost for the given user
-            existing_spend_obj: Optional[LiteLLM_TeamTable] = (
-                await user_api_key_cache.async_get_cache(key=_id)
-            )
+            existing_spend_obj: Optional[
+                LiteLLM_TeamTable
+            ] = await user_api_key_cache.async_get_cache(key=_id)
             if existing_spend_obj is None:
                 # do nothing if team not in api key cache
                 return
@@ -1510,10 +1523,11 @@ async def _run_background_health_check():
 
         if shared_health_manager is not None:
             try:
-                healthy_endpoints, unhealthy_endpoints = (
-                    await shared_health_manager.perform_shared_health_check(
-                        model_list=_llm_model_list, details=details_bool
-                    )
+                (
+                    healthy_endpoints,
+                    unhealthy_endpoints,
+                ) = await shared_health_manager.perform_shared_health_check(
+                    model_list=_llm_model_list, details=details_bool
                 )
             except Exception as e:
                 verbose_proxy_logger.error(
@@ -1660,8 +1674,28 @@ class ProxyConfig:
         ):
             # if using - db for config - models are in ModelTable
 
-            new_config.pop("model_list", None)
-            await prisma_client.insert_data(data=new_config, table_name="config")
+            # Make a copy to avoid mutating the original config
+            config_to_save = new_config.copy()
+
+            # SECURITY: Always encrypt environment_variables before DB write
+            if (
+                "environment_variables" in config_to_save
+                and config_to_save["environment_variables"]
+            ):
+
+                # decrypt the environment_variables - in case a caller function has already encrypted the environment_variables
+                decrypted_env_vars = self._decrypt_and_set_db_env_variables(
+                    environment_variables=config_to_save["environment_variables"],
+                    return_original_value=True,
+                )
+
+                # encrypt the environment_variables,
+                config_to_save["environment_variables"] = self._encrypt_env_variables(
+                    environment_variables=decrypted_env_vars
+                )
+
+            config_to_save.pop("model_list", None)
+            await prisma_client.insert_data(data=config_to_save, table_name="config")
         else:
             # Save the updated config - if user is not using a dB
             ## YAML
@@ -1844,6 +1878,45 @@ class ProxyConfig:
         if credential_list_dict:
             credential_list = [CredentialItem(**cred) for cred in credential_list_dict]
         return credential_list
+
+    def parse_search_tools(self, config: dict) -> Optional[List[SearchToolTypedDict]]:
+        """
+        Parse and validate search tools from config.
+        Loads environment variables and casts to SearchToolTypedDict.
+        
+        Args:
+            config: Config dictionary containing search_tools
+            
+        Returns:
+            List of validated SearchToolTypedDict or None if not configured
+        """
+        search_tools_raw = config.get("search_tools", None)
+        if not search_tools_raw:
+            return None
+        
+        search_tools_parsed: List[SearchToolTypedDict] = []
+        
+        print(  # noqa
+            "\033[32mLiteLLM: Proxy initialized with Search Tools:\033[0m"
+        )  # noqa
+        
+        for search_tool in search_tools_raw:
+            # Display loaded search tool
+            search_tool_name = search_tool.get("search_tool_name", "")
+            search_provider = search_tool.get("litellm_params", {}).get("search_provider", "")
+            print(f"\033[32m    {search_tool_name} ({search_provider})\033[0m")  # noqa
+            
+            # Cast to SearchToolTypedDict for type safety
+            try:
+                search_tool_typed: SearchToolTypedDict = SearchToolTypedDict(**search_tool)  # type: ignore
+                search_tools_parsed.append(search_tool_typed)
+            except Exception as e:
+                verbose_proxy_logger.error(
+                    f"Error parsing search tool {search_tool_name}: {str(e)}"
+                )
+                continue
+        
+        return search_tools_parsed if search_tools_parsed else None
 
     def _load_environment_variables(self, config: dict):
         ## ENVIRONMENT VARIABLES
@@ -2347,6 +2420,9 @@ class ProxyConfig:
                     assistant_settings["litellm_params"][k] = v
             assistants_config = AssistantsTypedDict(**assistant_settings)  # type: ignore
 
+        ## SEARCH TOOLS SETTINGS
+        search_tools: Optional[List[SearchToolTypedDict]] = self.parse_search_tools(config)
+
         ## /fine_tuning/jobs endpoints config
         finetuning_config = config.get("finetune_settings", None)
         set_fine_tuning_config(config=finetuning_config)
@@ -2366,10 +2442,11 @@ class ProxyConfig:
 
         if router_settings and isinstance(router_settings, dict):
             arg_spec = inspect.getfullargspec(litellm.Router)
-            # model list already set
+            # model list and search_tools already set
             exclude_args = {
                 "self",
                 "model_list",
+                "search_tools",
             }
 
             available_args = [x for x in arg_spec.args if x not in exclude_args]
@@ -2380,6 +2457,7 @@ class ProxyConfig:
         router = litellm.Router(
             **router_params,
             assistants_config=assistants_config,
+            search_tools=search_tools,
             router_general_settings=RouterGeneralSettings(
                 async_only_mode=True  # only init async clients
             ),
@@ -2838,7 +2916,9 @@ class ProxyConfig:
             encrypted_env_vars[k] = encrypted_value
         return encrypted_env_vars
 
-    def _decrypt_and_set_db_env_variables(self, environment_variables: dict) -> dict:
+    def _decrypt_and_set_db_env_variables(
+        self, environment_variables: dict, return_original_value: bool = False
+    ) -> dict:
         """
         Decrypts a dictionary of environment variables and then sets them in the environment
 
@@ -2849,7 +2929,9 @@ class ProxyConfig:
         decrypted_env_vars = {}
         for k, v in environment_variables.items():
             try:
-                decrypted_value = decrypt_value_helper(value=v, key=k)
+                decrypted_value = decrypt_value_helper(
+                    value=v, key=k, return_original_value=return_original_value
+                )
                 if decrypted_value is not None:
                     os.environ[k] = decrypted_value
                     decrypted_env_vars[k] = decrypted_value
@@ -3047,7 +3129,9 @@ class ProxyConfig:
                         d[k] = v
 
         if param_name == "environment_variables":
-            decrypted_env_vars = self._decrypt_and_set_db_env_variables(db_param_value)
+            decrypted_env_vars = self._decrypt_and_set_db_env_variables(
+                db_param_value, return_original_value=True
+            )
             current_config.setdefault("environment_variables", {}).update(
                 decrypted_env_vars
             )
@@ -3362,10 +3446,10 @@ class ProxyConfig:
         )
 
         try:
-            guardrails_in_db: List[Guardrail] = (
-                await GuardrailRegistry.get_all_guardrails_from_db(
-                    prisma_client=prisma_client
-                )
+            guardrails_in_db: List[
+                Guardrail
+            ] = await GuardrailRegistry.get_all_guardrails_from_db(
+                prisma_client=prisma_client
             )
             verbose_proxy_logger.debug(
                 "guardrails from the DB %s", str(guardrails_in_db)
@@ -3595,9 +3679,9 @@ async def initialize(  # noqa: PLR0915
         user_api_base = api_base
         dynamic_config[user_model]["api_base"] = api_base
     if api_version:
-        os.environ["AZURE_API_VERSION"] = (
-            api_version  # set this for azure - litellm can read this from the env
-        )
+        os.environ[
+            "AZURE_API_VERSION"
+        ] = api_version  # set this for azure - litellm can read this from the env
     if max_tokens:  # model-specific param
         dynamic_config[user_model]["max_tokens"] = max_tokens
     if temperature:  # model-specific param
@@ -6233,6 +6317,7 @@ async def token_counter(request: TokenCountRequest, call_endpoint: bool = False)
             pass
     if deployment is not None:
         litellm_model_name = deployment.get("litellm_params", {}).get("model")
+        model_info = deployment.get("model_info", {})
         load_credentials_from_list(deployment.get("litellm_params", {}))
         # remove the custom_llm_provider_prefix in the litellm_model_name
         if "/" in litellm_model_name:
@@ -8960,9 +9045,9 @@ async def get_config_list(
                             hasattr(sub_field_info, "description")
                             and sub_field_info.description is not None
                         ):
-                            nested_fields[idx].field_description = (
-                                sub_field_info.description
-                            )
+                            nested_fields[
+                                idx
+                            ].field_description = sub_field_info.description
                         idx += 1
 
                     _stored_in_db = None
@@ -9767,6 +9852,8 @@ app.include_router(response_router)
 app.include_router(batches_router)
 app.include_router(public_endpoints_router)
 app.include_router(rerank_router)
+app.include_router(ocr_router)
+app.include_router(search_router)
 app.include_router(image_router)
 app.include_router(fine_tuning_router)
 app.include_router(vector_store_router)
@@ -9799,6 +9886,7 @@ app.include_router(team_callback_router)
 app.include_router(budget_management_router)
 app.include_router(model_management_router)
 app.include_router(tag_management_router)
+app.include_router(cost_tracking_settings_router)
 app.include_router(user_agent_analytics_router)
 app.include_router(enterprise_router)
 app.include_router(ui_discovery_endpoints_router)
