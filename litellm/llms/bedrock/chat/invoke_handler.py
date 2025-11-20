@@ -3,20 +3,15 @@ TODO: DELETE FILE. Bedrock LLM is no longer used. Goto `litellm/llms/bedrock/cha
 """
 
 import copy
-import json
 import time
 import types
-import urllib.parse
 from functools import partial
 from typing import (
-    Any,
     AsyncIterator,
     Callable,
     Iterator,
-    List,
     Optional,
     Tuple,
-    Union,
     cast,
     get_args,
 )
@@ -498,9 +493,9 @@ class BedrockLLM(BaseAWSLLM):
                             content=None,
                         )
                         model_response.choices[0].message = _message  # type: ignore
-                        model_response._hidden_params["original_response"] = (
-                            outputText  # allow user to access raw anthropic tool calling response
-                        )
+                        model_response._hidden_params[
+                            "original_response"
+                        ] = outputText  # allow user to access raw anthropic tool calling response
                     if (
                         _is_function_call is True
                         and stream is not None
@@ -672,16 +667,6 @@ class BedrockLLM(BaseAWSLLM):
 
         return model_response
 
-    def encode_model_id(self, model_id: str) -> str:
-        """
-        Double encode the model ID to ensure it matches the expected double-encoded format.
-        Args:
-            model_id (str): The model ID to encode.
-        Returns:
-            str: The double-encoded model ID.
-        """
-        return urllib.parse.quote(model_id, safe="")
-
     def completion(  # noqa: PLR0915
         self,
         model: str,
@@ -808,9 +793,9 @@ class BedrockLLM(BaseAWSLLM):
                     ):  # completion(top_k=3) > anthropic_config(top_k=3) <- allows for dynamic variables to be passed in
                         inference_params[k] = v
                 if stream is True:
-                    inference_params["stream"] = (
-                        True  # cohere requires stream = True in inference params
-                    )
+                    inference_params[
+                        "stream"
+                    ] = True  # cohere requires stream = True in inference params
                 data = json.dumps({"prompt": prompt, **inference_params})
         elif provider == "anthropic":
             if model.startswith("anthropic.claude-3"):
@@ -1176,33 +1161,6 @@ class BedrockLLM(BaseAWSLLM):
                 return cast(litellm.BEDROCK_INVOKE_PROVIDERS_LITERAL, provider)
         return None
 
-    def get_bedrock_model_id(
-        self,
-        optional_params: dict,
-        provider: Optional[litellm.BEDROCK_INVOKE_PROVIDERS_LITERAL],
-        model: str,
-    ) -> str:
-        modelId = optional_params.pop("model_id", None)
-        if modelId is not None:
-            modelId = self.encode_model_id(model_id=modelId)
-        else:
-            modelId = model
-
-        if provider == "llama" and "llama/" in modelId:
-            modelId = self._get_model_id_for_llama_like_model(modelId)
-
-        return modelId
-
-    def _get_model_id_for_llama_like_model(
-        self,
-        model: str,
-    ) -> str:
-        """
-        Remove `llama` from modelID since `llama` is simply a spec to follow for custom bedrock models
-        """
-        model_id = model.replace("llama/", "")
-        return self.encode_model_id(model_id=model_id)
-
 
 def get_response_stream_shape():
     global _response_stream_shape_cache
@@ -1226,6 +1184,7 @@ class AWSEventStreamDecoder:
         self.parser = EventStreamJSONParser()
         self.content_blocks: List[ContentBlockDeltaEvent] = []
         self.tool_calls_index: Optional[int] = None
+        self.response_id: Optional[str] = None
 
     def check_empty_tool_call_args(self) -> bool:
         """
@@ -1289,6 +1248,17 @@ class AWSEventStreamDecoder:
 
     def converse_chunk_parser(self, chunk_data: dict) -> ModelResponseStream:
         try:
+            # Capture the conversationId from the first messageStart event
+            # and use it as the consistent ID for all subsequent chunks.
+            if self.response_id is None:
+                if "messageStart" in chunk_data:
+                    conversation_id = chunk_data["messageStart"].get("conversationId")
+                    if conversation_id:
+                        self.response_id = f"chatcmpl-{conversation_id}"
+                else:
+                    # Fallback to generating a UUID if the first chunk is not messageStart
+                    self.response_id = f"chatcmpl-{uuid.uuid4()}"
+
             verbose_logger.debug("\n\nRaw Chunk: {}\n\n".format(chunk_data))
             text = ""
             tool_use: Optional[ChatCompletionToolCallChunk] = None
@@ -1420,6 +1390,7 @@ class AWSEventStreamDecoder:
                         ),
                     )
                 ],
+                id=self.response_id,
                 usage=usage,
                 provider_specific_fields=model_response_provider_specific_fields,
             )
