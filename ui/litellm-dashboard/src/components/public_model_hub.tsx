@@ -1,5 +1,11 @@
 import React, { useEffect, useState, useRef, useMemo } from "react";
-import { modelHubPublicModelsCall, getPublicModelHubInfo, agentHubPublicModelsCall, mcpHubPublicServersCall } from "./networking";
+import {
+  modelHubPublicModelsCall,
+  getPublicModelHubInfo,
+  agentHubPublicModelsCall,
+  mcpHubPublicServersCall,
+  getUiConfig,
+} from "./networking";
 import { ModelDataTable } from "./model_dashboard/table";
 import { ColumnDef } from "@tanstack/react-table";
 import { Card, Text, Title, Button } from "@tremor/react";
@@ -91,7 +97,7 @@ const PublicModelHub: React.FC<PublicModelHubProps> = ({ accessToken, isEmbedded
   const [pageTitle, setPageTitle] = useState<string>("LiteLLM Gateway");
   const [customDocsDescription, setCustomDocsDescription] = useState<string | null>(null);
   const [litellmVersion, setLitellmVersion] = useState<string>("");
-  const [usefulLinks, setUsefulLinks] = useState<Record<string, string>>({});
+  const [usefulLinks, setUsefulLinks] = useState<Record<string, string | { url: string; index: number }>>({});
   const [loading, setLoading] = useState<boolean>(true);
   const [agentLoading, setAgentLoading] = useState<boolean>(true);
   const [mcpLoading, setMcpLoading] = useState<boolean>(true);
@@ -117,60 +123,72 @@ const PublicModelHub: React.FC<PublicModelHubProps> = ({ accessToken, isEmbedded
   const mcpTableRef = useRef<TableInstance<any>>(null);
 
   useEffect(() => {
-    const fetchPublicData = async () => {
+    const initializeAndFetch = async () => {
+      // Initialize proxyBaseUrl first to ensure it includes the server root path
       try {
-        setLoading(true);
-        const _modelHubData = await modelHubPublicModelsCall();
-        console.log("ModelHubData:", _modelHubData);
-        setModelHubData(_modelHubData);
+        await getUiConfig();
       } catch (error) {
-        console.error("There was an error fetching the public model data", error);
-        setServiceStatus("Service unavailable");
-      } finally {
-        setLoading(false);
+        console.error("Failed to get UI config:", error);
+        // Continue anyway - might work with default proxyBaseUrl
       }
+
+      const fetchPublicData = async () => {
+        try {
+          setLoading(true);
+          const _modelHubData = await modelHubPublicModelsCall();
+          console.log("ModelHubData:", _modelHubData);
+          setModelHubData(_modelHubData);
+        } catch (error) {
+          console.error("There was an error fetching the public model data", error);
+          setServiceStatus("Service unavailable");
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const fetchAgentData = async () => {
+        try {
+          setAgentLoading(true);
+          const _agentHubData = await agentHubPublicModelsCall();
+          console.log("AgentHubData:", _agentHubData);
+          setAgentHubData(_agentHubData);
+        } catch (error) {
+          console.error("There was an error fetching the public agent data", error);
+        } finally {
+          setAgentLoading(false);
+        }
+      };
+
+      const fetchMcpData = async () => {
+        try {
+          setMcpLoading(true);
+          const _mcpHubData = await mcpHubPublicServersCall();
+          console.log("MCPHubData:", _mcpHubData);
+          setMcpHubData(_mcpHubData);
+        } catch (error) {
+          console.error("There was an error fetching the public MCP server data", error);
+        } finally {
+          setMcpLoading(false);
+        }
+      };
+
+      const fetchPublicModelHubInfo = async () => {
+        const publicModelHubInfo = await getPublicModelHubInfo();
+        console.log("Public Model Hub Info:", publicModelHubInfo);
+        setPageTitle(publicModelHubInfo.docs_title);
+        setCustomDocsDescription(publicModelHubInfo.custom_docs_description);
+        setLitellmVersion(publicModelHubInfo.litellm_version);
+        setUsefulLinks(publicModelHubInfo.useful_links || {});
+      };
+
+      fetchPublicModelHubInfo();
+
+      fetchPublicData();
+      fetchAgentData();
+      fetchMcpData();
     };
 
-    const fetchAgentData = async () => {
-      try {
-        setAgentLoading(true);
-        const _agentHubData = await agentHubPublicModelsCall();
-        console.log("AgentHubData:", _agentHubData);
-        setAgentHubData(_agentHubData);
-      } catch (error) {
-        console.error("There was an error fetching the public agent data", error);
-      } finally {
-        setAgentLoading(false);
-      }
-    };
-
-    const fetchMcpData = async () => {
-      try {
-        setMcpLoading(true);
-        const _mcpHubData = await mcpHubPublicServersCall();
-        console.log("MCPHubData:", _mcpHubData);
-        setMcpHubData(_mcpHubData);
-      } catch (error) {
-        console.error("There was an error fetching the public MCP server data", error);
-      } finally {
-        setMcpLoading(false);
-      }
-    };
-
-    const fetchPublicModelHubInfo = async () => {
-      const publicModelHubInfo = await getPublicModelHubInfo();
-      console.log("Public Model Hub Info:", publicModelHubInfo);
-      setPageTitle(publicModelHubInfo.docs_title);
-      setCustomDocsDescription(publicModelHubInfo.custom_docs_description);
-      setLitellmVersion(publicModelHubInfo.litellm_version);
-      setUsefulLinks(publicModelHubInfo.useful_links || {});
-    };
-
-    fetchPublicModelHubInfo();
-
-    fetchPublicData();
-    fetchAgentData();
-    fetchMcpData();
+    initializeAndFetch();
   }, []);
 
   // Clear filters when filter values change to avoid confusion
@@ -400,8 +418,7 @@ const PublicModelHub: React.FC<PublicModelHubProps> = ({ accessToken, isEmbedded
 
     // Apply transport filters
     return searchResults.filter((server) => {
-      const matchesTransport =
-        selectedMcpTransports.length === 0 || selectedMcpTransports.includes(server.transport);
+      const matchesTransport = selectedMcpTransports.length === 0 || selectedMcpTransports.includes(server.transport);
 
       return matchesTransport;
     });
@@ -959,16 +976,24 @@ const PublicModelHub: React.FC<PublicModelHubProps> = ({ accessToken, isEmbedded
             <Card className="mb-10 p-8 bg-white border border-gray-200 rounded-lg shadow-sm">
               <Title className="text-2xl font-semibold mb-6 text-gray-900">Useful Links</Title>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {Object.entries(usefulLinks || {}).map(([title, url]) => (
-                  <button
-                    key={title}
-                    onClick={() => window.open(url, "_blank")}
-                    className="flex items-center space-x-3 text-blue-600 hover:text-blue-800 transition-colors p-3 rounded-lg hover:bg-blue-50 border border-gray-200"
-                  >
-                    <ExternalLinkIcon className="w-4 h-4" />
-                    <Text className="text-sm font-medium">{title}</Text>
-                  </button>
-                ))}
+                {Object.entries(usefulLinks || {})
+                  .map(([title, value]) => {
+                    // Handle both old format (string) and new format ({url, index})
+                    const url = typeof value === "string" ? value : value.url;
+                    const index = typeof value === "string" ? 0 : value.index ?? 0;
+                    return { title, url, index };
+                  })
+                  .sort((a, b) => a.index - b.index)
+                  .map(({ title, url }) => (
+                    <button
+                      key={title}
+                      onClick={() => window.open(url, "_blank")}
+                      className="flex items-center space-x-3 text-blue-600 hover:text-blue-800 transition-colors p-3 rounded-lg hover:bg-blue-50 border border-gray-200"
+                    >
+                      <ExternalLinkIcon className="w-4 h-4" />
+                      <Text className="text-sm font-medium">{title}</Text>
+                    </button>
+                  ))}
               </div>
             </Card>
           )}
@@ -1183,10 +1208,7 @@ const PublicModelHub: React.FC<PublicModelHubProps> = ({ accessToken, isEmbedded
                     <div>
                       <div className="flex items-center space-x-2 mb-3">
                         <Text className="text-sm font-medium text-gray-700">Search MCP Servers:</Text>
-                        <Tooltip
-                          title="Search MCP servers by name or description"
-                          placement="top"
-                        >
+                        <Tooltip title="Search MCP servers by name or description" placement="top">
                           <Info className="w-4 h-4 text-gray-400 cursor-help" />
                         </Tooltip>
                       </div>
@@ -1842,9 +1864,7 @@ print(response.model_dump(mode='json', exclude_none=True))`;
                 <div>
                   <Text className="text-lg font-semibold mb-4">Additional Information</Text>
                   <div className="bg-gray-50 p-4 rounded-lg">
-                    <pre className="text-xs overflow-x-auto">
-                      {JSON.stringify(selectedMcpServer.mcp_info, null, 2)}
-                    </pre>
+                    <pre className="text-xs overflow-x-auto">{JSON.stringify(selectedMcpServer.mcp_info, null, 2)}</pre>
                   </div>
                 </div>
               )}
@@ -1854,7 +1874,7 @@ print(response.model_dump(mode='json', exclude_none=True))`;
                 <Text className="text-lg font-semibold mb-4">Usage Example</Text>
                 <div className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto">
                   <pre className="text-sm">
-{`# Using MCP Server with Python FastMCP
+                    {`# Using MCP Server with Python FastMCP
 
 from fastmcp import Client
 import asyncio
