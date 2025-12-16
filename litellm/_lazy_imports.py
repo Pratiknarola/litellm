@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, cast
 import sys
 
 def _get_litellm_globals() -> dict:
@@ -32,6 +32,25 @@ UTILS_NAMES = (
     "ModelResponse", "ModelResponseStream", "EmbeddingResponse", "ImageResponse",
     "TranscriptionResponse", "TextCompletionResponse", "get_provider_fields",
     "ModelResponseListIterator", "get_valid_models",
+)
+
+# Token counter names that support lazy loading via _lazy_import_token_counter
+TOKEN_COUNTER_NAMES = (
+    "get_modified_max_tokens",
+)
+
+# Caching / cache classes that support lazy loading via _lazy_import_caching
+CACHING_NAMES = (
+    "Cache",
+    "DualCache",
+    "RedisCache",
+    "InMemoryCache",
+)
+
+# HTTP handler names that support lazy loading via _lazy_import_http_handlers
+HTTP_HANDLER_NAMES = (
+    "module_level_aclient",
+    "module_level_client",
 )
 
 # Lazy import for utils module - imports only the requested item by name.
@@ -265,6 +284,52 @@ def _lazy_import_cost_calculator(name: str) -> Any:
     raise AttributeError(f"Cost calculator lazy import: unknown attribute {name!r}")
 
 
+def _lazy_import_token_counter(name: str) -> Any:
+    """Lazy import for token_counter utilities."""
+    _globals = _get_litellm_globals()
+
+    if name == "get_modified_max_tokens":
+        from litellm.litellm_core_utils.token_counter import (
+            get_modified_max_tokens as _get_modified_max_tokens,
+        )
+
+        _globals["get_modified_max_tokens"] = _get_modified_max_tokens
+        return _get_modified_max_tokens
+
+    raise AttributeError(f"Token counter lazy import: unknown attribute {name!r}")
+
+
+def _lazy_import_caching(name: str) -> Any:
+    """Lazy import for caching module classes."""
+    _globals = _get_litellm_globals()
+
+    if name == "Cache":
+        from litellm.caching.caching import Cache as _Cache
+
+        _globals["Cache"] = _Cache
+        return _Cache
+
+    if name == "DualCache":
+        from litellm.caching.caching import DualCache as _DualCache
+
+        _globals["DualCache"] = _DualCache
+        return _DualCache
+
+    if name == "RedisCache":
+        from litellm.caching.caching import RedisCache as _RedisCache
+
+        _globals["RedisCache"] = _RedisCache
+        return _RedisCache
+
+    if name == "InMemoryCache":
+        from litellm.caching.caching import InMemoryCache as _InMemoryCache
+
+        _globals["InMemoryCache"] = _InMemoryCache
+        return _InMemoryCache
+
+    raise AttributeError(f"Caching lazy import: unknown attribute {name!r}")
+
+
 def _lazy_import_litellm_logging(name: str) -> Any:
     """Lazy import for litellm_logging module."""
     _globals = _get_litellm_globals()
@@ -279,3 +344,35 @@ def _lazy_import_litellm_logging(name: str) -> Any:
         return _modify_integration
     
     raise AttributeError(f"Litellm logging lazy import: unknown attribute {name!r}")
+
+
+def _lazy_import_http_handlers(name: str) -> Any:
+    """Lazy import and instantiate module-level HTTP handlers."""
+    _globals = _get_litellm_globals()
+
+    if name == "module_level_aclient":
+        # Use shared async client factory instead of directly instantiating AsyncHTTPHandler
+        from litellm.llms.custom_httpx.http_handler import get_async_httpx_client
+
+        timeout = _globals.get("request_timeout")
+        params = {"timeout": timeout, "client_alias": "module level aclient"}
+        # llm_provider is only used for cache keying; use a string identifier but
+        # cast to Any so static type checkers don't complain about the literal.
+        provider_id = cast(Any, "litellm_module_level_client")
+        async_client = get_async_httpx_client(
+            llm_provider=provider_id,
+            params=params,
+        )
+        _globals["module_level_aclient"] = async_client
+        return async_client
+
+    if name == "module_level_client":
+        # Import handler type locally to avoid heavy imports at module load time
+        from litellm.llms.custom_httpx.http_handler import HTTPHandler
+
+        timeout = _globals.get("request_timeout")
+        sync_client = HTTPHandler(timeout=timeout)
+        _globals["module_level_client"] = sync_client
+        return sync_client
+
+    raise AttributeError(f"HTTP handlers lazy import: unknown attribute {name!r}")

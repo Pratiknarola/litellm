@@ -26,8 +26,6 @@ from typing import (
 )
 from litellm.types.integrations.datadog_llm_obs import DatadogLLMObsInitParams
 from litellm.types.integrations.datadog import DatadogInitParams
-from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
-from litellm.caching.caching import Cache, DualCache, RedisCache, InMemoryCache
 from litellm.caching.llm_caching_handler import LLMClientCache
 from litellm.types.llms.bedrock import COHERE_EMBEDDING_INPUT_TYPES
 from litellm.types.utils import (
@@ -333,7 +331,7 @@ caching: bool = (
 caching_with_models: bool = (
     False  # # Not used anymore, will be removed in next MAJOR release - https://github.com/BerriAI/litellm/discussions/648
 )
-cache: Optional[Cache] = (
+cache: Optional["Cache"] = (
     None  # cache object <- use this - https://docs.litellm.ai/docs/caching
 )
 default_in_memory_ttl: Optional[float] = None
@@ -422,10 +420,6 @@ disable_aiohttp_trust_env: bool = (
 force_ipv4: bool = (
     False  # when True, litellm will force ipv4 for all LLM requests. Some users have seen httpx ConnectionError when using ipv6.
 )
-module_level_aclient = AsyncHTTPHandler(
-    timeout=request_timeout, client_alias="module level aclient"
-)
-module_level_client = HTTPHandler(timeout=request_timeout)
 
 #### RETRIES ####
 num_retries: Optional[int] = None  # per model endpoint
@@ -1071,7 +1065,6 @@ openai_video_generation_models = ["sora-2"]
 from .timeout import timeout
 from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
 from litellm.litellm_core_utils.core_helpers import remove_index_from_tool_calls
-from litellm.litellm_core_utils.token_counter import get_modified_max_tokens
 # client must be imported immediately as it's used as a decorator at function definition time
 from .utils import client
 # Note: Most other utils imports are lazy-loaded via __getattr__ to avoid loading utils.py
@@ -1520,6 +1513,8 @@ def set_global_gitlab_config(config: Dict[str, Any]) -> None:
 
 if TYPE_CHECKING:
     from litellm.types.utils import ModelInfo as _ModelInfoType
+    from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
+    from litellm.caching.caching import Cache
 
     # Cost calculator functions
     cost_per_token: Callable[..., Tuple[float, float]]
@@ -1560,13 +1555,20 @@ if TYPE_CHECKING:
     # Response types - truly lazy loaded only (not in main.py or elsewhere)
     ModelResponseListIterator: Type[Any]
 
+    # HTTP handler singletons (created lazily via __getattr__ at runtime)
+    module_level_aclient: AsyncHTTPHandler
+    module_level_client: HTTPHandler
+
 
 def __getattr__(name: str) -> Any:
-    """Lazy import handler for cost_calculator and litellm_logging functions."""
+    """Lazy import handler"""
     from ._lazy_imports import (
         COST_CALCULATOR_NAMES,
         LITELLM_LOGGING_NAMES,
         UTILS_NAMES,
+        TOKEN_COUNTER_NAMES,
+        CACHING_NAMES,
+        HTTP_HANDLER_NAMES,
     )
     
     # Lazy load cost_calculator functions
@@ -1584,6 +1586,22 @@ def __getattr__(name: str) -> Any:
         from ._lazy_imports import _lazy_import_utils
         return _lazy_import_utils(name)
     
+    # Lazy load token counter utilities
+    if name in TOKEN_COUNTER_NAMES:
+        from ._lazy_imports import _lazy_import_token_counter
+        return _lazy_import_token_counter(name)
+    
+    # Lazy load caching classes
+    if name in CACHING_NAMES:
+        from ._lazy_imports import _lazy_import_caching
+        return _lazy_import_caching(name)
+    
+    # Lazy-load HTTP handler singletons used across the codebase
+    if name in HTTP_HANDLER_NAMES:
+        from ._lazy_imports import _lazy_import_http_handlers
+
+        return _lazy_import_http_handlers(name)
+
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
