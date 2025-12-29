@@ -1,11 +1,5 @@
-# +-----------------------------------------------+
-# |                                               |
-# |           Give Feedback / Get Help            |
-# | https://github.com/BerriAI/litellm/issues/new |
-# |                                               |
-# +-----------------------------------------------+
-#
-#  Thank you users! We ❤️ you! - Krrish & Ishaan
+# from __future__ import annotations must be the first non-comment statement
+from __future__ import annotations
 
 import ast
 import asyncio
@@ -60,6 +54,11 @@ import litellm.litellm_core_utils.audio_utils.utils
 import litellm.litellm_core_utils.json_validation_rule
 import litellm.llms
 import litellm.llms.gemini
+from litellm._lazy_imports import (
+    _get_default_encoding,
+    _get_modified_max_tokens,
+    _get_token_counter_new,
+)
 from litellm._uuid import uuid
 from litellm.caching._internal_lru_cache import lru_cache_wrapper
 from litellm.caching.caching import DualCache
@@ -96,7 +95,6 @@ from litellm.litellm_core_utils.core_helpers import (
     process_response_headers,
 )
 from litellm.litellm_core_utils.credential_accessor import CredentialAccessor
-from litellm.litellm_core_utils.default_encoding import encoding
 from litellm.litellm_core_utils.dot_notation_indexing import (
     delete_nested_value,
     is_nested_path,
@@ -144,7 +142,6 @@ from litellm.litellm_core_utils.redact_messages import (
 )
 from litellm.litellm_core_utils.rules import Rules
 from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
-from litellm.litellm_core_utils.token_counter import get_modified_max_tokens
 from litellm.llms.base_llm.google_genai.transformation import (
     BaseGoogleGenAIGenerateContentConfig,
 )
@@ -211,6 +208,20 @@ from litellm.types.utils import (
     all_litellm_params,
 )
 
+# +-----------------------------------------------+
+# |                                               |
+# |           Give Feedback / Get Help            |
+# | https://github.com/BerriAI/litellm/issues/new |
+# |                                               |
+# +-----------------------------------------------+
+#
+#  Thank you users! We ❤️ you! - Krrish & Ishaan
+
+
+
+
+
+
 try:
     # Python 3.9+
     with resources.files("litellm.litellm_core_utils.tokenizers").joinpath(
@@ -249,7 +260,6 @@ from litellm.litellm_core_utils.llm_response_utils.response_metadata import (
     update_response_metadata,
 )
 from litellm.litellm_core_utils.thread_pool_executor import executor
-from litellm.litellm_core_utils.token_counter import token_counter as token_counter_new
 from litellm.llms.base_llm.anthropic_messages.transformation import (
     BaseAnthropicMessagesConfig,
 )
@@ -260,12 +270,18 @@ from litellm.llms.base_llm.base_utils import (
     BaseLLMModelInfo,
     type_to_response_format_param,
 )
+
+if TYPE_CHECKING:
+    # Heavy types that are only needed for type checking; avoid importing
+    # their modules at runtime during `litellm` import.
+    from litellm.llms.base_llm.files.transformation import BaseFilesConfig
+    from litellm.proxy._types import AllowedModelRegion
+
 from litellm.llms.base_llm.batches.transformation import BaseBatchesConfig
 from litellm.llms.base_llm.chat.transformation import BaseConfig
 from litellm.llms.base_llm.completion.transformation import BaseTextCompletionConfig
 from litellm.llms.base_llm.containers.transformation import BaseContainerConfig
 from litellm.llms.base_llm.embedding.transformation import BaseEmbeddingConfig
-from litellm.llms.base_llm.files.transformation import BaseFilesConfig
 from litellm.llms.base_llm.image_edit.transformation import BaseImageEditConfig
 from litellm.llms.base_llm.image_generation.transformation import (
     BaseImageGenerationConfig,
@@ -310,7 +326,6 @@ from .exceptions import (
     UnprocessableEntityError,
     UnsupportedParamsError,
 )
-from .proxy._types import AllowedModelRegion, KeyManagementSystem
 from .types.llms.openai import (
     ChatCompletionDeltaToolCallChunk,
     ChatCompletionToolCallChunk,
@@ -553,6 +568,111 @@ def get_dynamic_callbacks(
     return returned_callbacks
 
 
+def _is_gemini_model(model: Optional[str], custom_llm_provider: Optional[str]) -> bool:
+    """
+    Check if the target model is a Gemini or Vertex AI Gemini model.
+    """
+    if custom_llm_provider in ["gemini", "vertex_ai", "vertex_ai_beta"]:
+        # For vertex_ai, check if it's actually a Gemini model
+        if custom_llm_provider in ["vertex_ai", "vertex_ai_beta"]:
+            return model is not None and "gemini" in model.lower()
+        return True
+    
+    # Check if model name contains gemini
+    return model is not None and "gemini" in model.lower()
+
+
+def _remove_thought_signature_from_id(tool_call_id: str, separator: str) -> str:
+    """
+    Remove thought signature from a tool call ID.
+    """
+    if separator in tool_call_id:
+        return tool_call_id.split(separator, 1)[0]
+    return tool_call_id
+
+
+def _process_assistant_message_tool_calls(
+    msg_copy: dict, thought_signature_separator: str
+) -> dict:
+    """
+    Process assistant message to remove thought signatures from tool call IDs.
+    """
+    role = msg_copy.get("role")
+    tool_calls = msg_copy.get("tool_calls")
+    
+    if role == "assistant" and isinstance(tool_calls, list):
+        new_tool_calls = []
+        for tc in tool_calls:
+            # Handle both dict and Pydantic model tool calls
+            if hasattr(tc, "model_dump"):
+                # It's a Pydantic model, convert to dict
+                tc_dict = tc.model_dump()
+            elif isinstance(tc, dict):
+                tc_dict = tc.copy()
+            else:
+                new_tool_calls.append(tc)
+                continue
+            
+            # Remove thought signature from ID if present
+            if isinstance(tc_dict.get("id"), str):
+                if thought_signature_separator in tc_dict["id"]:
+                    tc_dict["id"] = _remove_thought_signature_from_id(
+                        tc_dict["id"], thought_signature_separator
+                    )
+            
+            new_tool_calls.append(tc_dict)
+        msg_copy["tool_calls"] = new_tool_calls
+    
+    return msg_copy
+
+
+def _process_tool_message_id(msg_copy: dict, thought_signature_separator: str) -> dict:
+    """
+    Process tool message to remove thought signature from tool_call_id.
+    """
+    if msg_copy.get("role") == "tool" and isinstance(
+        msg_copy.get("tool_call_id"), str
+    ):
+        if thought_signature_separator in msg_copy["tool_call_id"]:
+            msg_copy["tool_call_id"] = _remove_thought_signature_from_id(
+                msg_copy["tool_call_id"], thought_signature_separator
+            )
+    
+    return msg_copy
+
+
+def _remove_thought_signatures_from_messages(
+    messages: List, thought_signature_separator: str
+) -> List:
+    """
+    Remove thought signatures from tool call IDs in all messages.
+    """
+    processed_messages = []
+    
+    for msg in messages:
+        # Handle Pydantic models (convert to dict)
+        if hasattr(msg, "model_dump"):
+            msg_dict = msg.model_dump()
+        elif isinstance(msg, dict):
+            msg_dict = msg.copy()
+        else:
+            # Unknown type, keep as is
+            processed_messages.append(msg)
+            continue
+        
+        # Process assistant messages with tool_calls
+        msg_dict = _process_assistant_message_tool_calls(
+            msg_dict, thought_signature_separator
+        )
+        
+        # Process tool messages with tool_call_id
+        msg_dict = _process_tool_message_id(msg_dict, thought_signature_separator)
+        
+        processed_messages.append(msg_dict)
+    
+    return processed_messages
+
+
 def function_setup(  # noqa: PLR0915
     original_function: str, rules_obj, start_time, *args, **kwargs
 ):  # just run once to check if user wants to send their data anywhere - PostHog/Sentry/Slack/etc.
@@ -764,6 +884,58 @@ def function_setup(  # noqa: PLR0915
                     input=buffer.getvalue(),
                     model=model,
                 )
+            
+            ### REMOVE THOUGHT SIGNATURES FROM TOOL CALL IDS FOR NON-GEMINI MODELS ###
+            # Gemini models embed thought signatures in tool call IDs. When sending
+            # messages with tool calls to non-Gemini providers, we need to remove these
+            # signatures to ensure compatibility.
+            if isinstance(messages, list) and len(messages) > 0:
+                try:
+                    from litellm.litellm_core_utils.get_llm_provider_logic import (
+                        get_llm_provider,
+                    )
+                    from litellm.litellm_core_utils.prompt_templates.factory import (
+                        THOUGHT_SIGNATURE_SEPARATOR,
+                    )
+
+                    # Get custom_llm_provider to determine target provider
+                    custom_llm_provider = kwargs.get("custom_llm_provider")
+                    
+                    # If custom_llm_provider not in kwargs, try to determine it from the model
+                    if not custom_llm_provider and model:
+                        try:
+                            _, custom_llm_provider, _, _ = get_llm_provider(
+                                model=model,
+                                custom_llm_provider=custom_llm_provider,
+                            )
+                        except Exception:
+                            # If we can't determine the provider, skip this processing
+                            pass
+                    
+                    # Only process if target is NOT a Gemini model
+                    if not _is_gemini_model(model, custom_llm_provider):
+                        verbose_logger.debug(
+                            "Removing thought signatures from tool call IDs for non-Gemini model"
+                        )
+                        
+                        # Process messages to remove thought signatures
+                        processed_messages = _remove_thought_signatures_from_messages(
+                            messages, THOUGHT_SIGNATURE_SEPARATOR
+                        )
+                        
+                        # Update messages in kwargs or args
+                        if "messages" in kwargs:
+                            kwargs["messages"] = processed_messages
+                        elif len(args) > 1:
+                            args_list = list(args)
+                            args_list[1] = processed_messages
+                            args = tuple(args_list)
+
+                except Exception as e:
+                    # Log the error but don't fail the request
+                    verbose_logger.warning(
+                        f"Error removing thought signatures from tool call IDs: {str(e)}"
+                    )
         elif (
             call_type == CallTypes.embedding.value
             or call_type == CallTypes.aembedding.value
@@ -1244,7 +1416,7 @@ def client(original_function):  # noqa: PLR0915
                     elif kwargs.get("messages", None):
                         messages = kwargs["messages"]
                     user_max_tokens = kwargs.get("max_tokens")
-                    modified_max_tokens = get_modified_max_tokens(
+                    modified_max_tokens = _get_modified_max_tokens()(
                         model=model,
                         base_model=base_model,
                         messages=messages,
@@ -1481,7 +1653,7 @@ def client(original_function):  # noqa: PLR0915
                     elif kwargs.get("messages", None):
                         messages = kwargs["messages"]
                     user_max_tokens = kwargs.get("max_tokens")
-                    modified_max_tokens = get_modified_max_tokens(
+                    modified_max_tokens = _get_modified_max_tokens()(
                         model=model,
                         base_model=base_model,
                         messages=messages,
@@ -1752,7 +1924,7 @@ def _select_tokenizer_helper(model: str) -> SelectTokenizerResponse:
 
 
 def _return_openai_tokenizer(model: str) -> SelectTokenizerResponse:
-    return {"type": "openai_tokenizer", "tokenizer": encoding}
+    return {"type": "openai_tokenizer", "tokenizer": _get_default_encoding()}
 
 
 def _return_huggingface_tokenizer(model: str) -> Optional[SelectTokenizerResponse]:
@@ -1872,7 +2044,7 @@ def token_counter(
     if litellm.disable_token_counter is True:
         return 0
 
-    return token_counter_new(
+    return _get_token_counter_new()(
         model,
         custom_tokenizer,
         text,
@@ -2349,14 +2521,27 @@ def register_model(model_cost: Union[str, dict]):  # noqa: PLR0915
     elif isinstance(model_cost, str):
         loaded_model_cost = litellm.get_model_cost_map(url=model_cost)
 
+    # Providers that trigger side effects (e.g., OAuth flows) when get_model_info is called
+    # Skip get_model_info for these providers during model registration
+    _skip_get_model_info_providers = {
+        LlmProviders.GITHUB_COPILOT.value,
+    }
+
     for key, value in loaded_model_cost.items():
         ## get model info ##
-        try:
-            existing_model: dict = cast(dict, get_model_info(model=key))
-            model_cost_key = existing_model["key"]
-        except Exception:
-            existing_model = {}
+        provider = value.get("litellm_provider", "")
+        if provider in _skip_get_model_info_providers or any(
+            key.startswith(f"{p}/") for p in _skip_get_model_info_providers
+        ):
+            existing_model = litellm.model_cost.get(key, {})
             model_cost_key = key
+        else:
+            try:
+                existing_model = cast(dict, get_model_info(model=key))
+                model_cost_key = existing_model["key"]
+            except Exception:
+                existing_model = {}
+                model_cost_key = key
         ## override / add new keys to the existing model cost dictionary
         updated_dictionary = _update_dictionary(existing_model, value)
         litellm.model_cost.setdefault(model_cost_key, {}).update(updated_dictionary)
@@ -5842,7 +6027,7 @@ def prompt_token_calculator(model, messages):
         anthropic_obj = Anthropic()
         num_tokens = anthropic_obj.count_tokens(text)  # type: ignore
     else:
-        num_tokens = len(encoding.encode(text))
+        num_tokens = len(_get_default_encoding().encode(text))
     return num_tokens
 
 
@@ -7196,6 +7381,8 @@ class ProviderConfigManager:
             return litellm.IBMWatsonXAIConfig()
         elif litellm.LlmProviders.EMPOWER == provider:
             return litellm.EmpowerChatConfig()
+        elif litellm.LlmProviders.MINIMAX == provider:            
+            return litellm.MinimaxChatConfig()
         elif litellm.LlmProviders.GITHUB == provider:
             return litellm.GithubChatConfig()
         elif litellm.LlmProviders.COMPACTIFAI == provider:
@@ -7248,6 +7435,8 @@ class ProviderConfigManager:
                 return litellm.AzureOpenAIGPT5Config()
             return litellm.AzureOpenAIConfig()
         elif litellm.LlmProviders.AZURE_AI == provider:
+            if "claude" in model.lower():
+                return litellm.AzureAnthropicConfig()
             return litellm.AzureAIStudioConfig()
         elif litellm.LlmProviders.AZURE_TEXT == provider:
             return litellm.AzureOpenAITextConfig()
@@ -7471,6 +7660,12 @@ class ProviderConfigManager:
                 )
 
                 return AzureAnthropicMessagesConfig()
+        elif litellm.LlmProviders.MINIMAX == provider:
+            from litellm.llms.minimax.messages.transformation import (
+                MinimaxMessagesConfig,
+            )
+
+            return MinimaxMessagesConfig()
         return None
 
     @staticmethod
@@ -7949,6 +8144,18 @@ class ProviderConfigManager:
             )
 
             return get_vertex_ai_image_edit_config(model)
+        elif LlmProviders.STABILITY == provider:
+            from litellm.llms.stability.image_edit import (
+                get_stability_image_edit_config,
+            )
+
+            return get_stability_image_edit_config(model)
+        elif LlmProviders.BEDROCK == provider:
+            from litellm.llms.bedrock.image_edit.stability_transformation import (
+                BedrockStabilityImageEditConfig,
+            )
+
+            return BedrockStabilityImageEditConfig()
         return None
 
     @staticmethod
@@ -7967,9 +8174,13 @@ class ProviderConfigManager:
 
             return get_azure_ai_ocr_config(model=model)
 
+        if provider == litellm.LlmProviders.VERTEX_AI:
+            from litellm.llms.vertex_ai.ocr.common_utils import get_vertex_ai_ocr_config
+
+            return get_vertex_ai_ocr_config(model=model)
+        
         PROVIDER_TO_CONFIG_MAP = {
             litellm.LlmProviders.MISTRAL: MistralOCRConfig,
-            litellm.LlmProviders.VERTEX_AI: VertexAIOCRConfig,
         }
         config_class = PROVIDER_TO_CONFIG_MAP.get(provider, None)
         if config_class is None:
@@ -7987,6 +8198,7 @@ class ProviderConfigManager:
         from litellm.llms.exa_ai.search.transformation import ExaAISearchConfig
         from litellm.llms.firecrawl.search.transformation import FirecrawlSearchConfig
         from litellm.llms.google_pse.search.transformation import GooglePSESearchConfig
+        from litellm.llms.linkup.search.transformation import LinkupSearchConfig
         from litellm.llms.parallel_ai.search.transformation import (
             ParallelAISearchConfig,
         )
@@ -8003,6 +8215,7 @@ class ProviderConfigManager:
             SearchProviders.DATAFORSEO: DataForSEOSearchConfig,
             SearchProviders.FIRECRAWL: FirecrawlSearchConfig,
             SearchProviders.SEARXNG: SearXNGSearchConfig,
+            SearchProviders.LINKUP: LinkupSearchConfig,
         }
         config_class = PROVIDER_TO_CONFIG_MAP.get(provider, None)
         if config_class is None:
@@ -8048,6 +8261,18 @@ class ProviderConfigManager:
             )
 
             return VertexAITextToSpeechConfig()
+        elif litellm.LlmProviders.MINIMAX == provider:
+            from litellm.llms.minimax.text_to_speech.transformation import (
+                MinimaxTextToSpeechConfig,
+            )
+
+            return MinimaxTextToSpeechConfig()
+        elif litellm.LlmProviders.AWS_POLLY == provider:
+            from litellm.llms.aws_polly.text_to_speech.transformation import (
+                AWSPollyTextToSpeechConfig,
+            )
+
+            return AWSPollyTextToSpeechConfig()
         return None
 
     @staticmethod
@@ -8185,9 +8410,6 @@ def extract_duration_from_srt_or_vtt(srt_or_vtt_content: str) -> Optional[float]
         durations.append(total_seconds)
 
     return max(durations) if durations else None
-
-
-import httpx
 
 
 def _add_path_to_api_base(api_base: str, ending_path: str) -> str:
@@ -8386,3 +8608,18 @@ def should_run_mock_completion(
     if mock_response or mock_tool_calls or mock_timeout:
         return True
     return False
+
+
+# Re-export encoding from main.py for backward compatibility
+# This allows tests to import: from litellm.utils import encoding
+# We use a lazy import to avoid loading main.py at utils.py import time
+def __getattr__(name: str) -> Any:
+    """Lazy import handler for utils module"""
+    if name == "encoding":
+        # Cache it in the module's __dict__ for subsequent accesses
+        import sys
+
+        from litellm.main import encoding as _encoding
+        sys.modules[__name__].__dict__["encoding"] = _encoding
+        return _encoding
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
