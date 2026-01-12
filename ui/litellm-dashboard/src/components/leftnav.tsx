@@ -24,11 +24,12 @@ import {
   UserOutlined,
 } from "@ant-design/icons";
 import type { MenuProps } from "antd";
-import { Badge, ConfigProvider, Layout, Menu } from "antd";
+import { ConfigProvider, Layout, Menu } from "antd";
 import { useMemo } from "react";
 import { all_admin_roles, internalUserRoles, isAdminRole, rolesWithWriteAccess } from "../utils/roles";
 import type { Organization } from "./networking";
 import UsageIndicator from "./usage_indicator";
+import NewBadge from "./common_components/NewBadge";
 const { Sider } = Layout;
 
 // Define the props type
@@ -103,11 +104,7 @@ const Sidebar: React.FC<SidebarProps> = ({ setPage, defaultSelectedKey, collapse
         {
           key: "agents",
           page: "agents",
-          label: (
-            <span className="flex items-center gap-4">
-              Agents <Badge color="blue" count="New" />
-            </span>
-          ),
+          label: <span className="flex items-center gap-4">Agents</span>,
           icon: <RobotOutlined />,
           roles: rolesWithWriteAccess,
         },
@@ -157,7 +154,7 @@ const Sidebar: React.FC<SidebarProps> = ({ setPage, defaultSelectedKey, collapse
           roles: [...all_admin_roles, ...internalUserRoles],
           label: (
             <span className="flex items-center gap-4">
-              Usage <Badge color="blue" count="New" />
+              Usage <NewBadge />
             </span>
           ),
         },
@@ -267,7 +264,7 @@ const Sidebar: React.FC<SidebarProps> = ({ setPage, defaultSelectedKey, collapse
         {
           key: "settings",
           page: "settings",
-          label: "Settings",
+          label: <span className="flex items-center gap-4">Settings</span>,
           icon: <SettingOutlined />,
           roles: all_admin_roles,
           children: [

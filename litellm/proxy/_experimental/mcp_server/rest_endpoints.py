@@ -1,5 +1,4 @@
 import importlib
-import traceback
 from typing import Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -219,10 +218,10 @@ if MCP_AVAILABLE:
         from fastapi import HTTPException
 
         from litellm.exceptions import BlockedPiiEntityError, GuardrailRaisedException
-        from litellm.proxy.proxy_server import add_litellm_data_to_request, proxy_config
         from litellm.proxy._experimental.mcp_server.auth.user_api_key_auth_mcp import (
             MCPRequestHandler,
         )
+        from litellm.proxy.proxy_server import add_litellm_data_to_request, proxy_config
 
         try:
             data = await request.json()
@@ -253,7 +252,12 @@ if MCP_AVAILABLE:
             if mcp_server_auth_headers:
                 data["mcp_server_auth_headers"] = mcp_server_auth_headers
             data["raw_headers"] = raw_headers_from_request
-
+            
+            # Extract user_api_key_auth from metadata and add to top level
+            # call_mcp_tool expects user_api_key_auth as a top-level parameter
+            if "metadata" in data and "user_api_key_auth" in data["metadata"]:
+                data["user_api_key_auth"] = data["metadata"]["user_api_key_auth"]
+            
             result = await call_mcp_tool(**data)
             return result
         except BlockedPiiEntityError as e:
@@ -347,17 +351,16 @@ if MCP_AVAILABLE:
 
         except Exception as e:
             verbose_logger.error(f"Error in MCP operation: {e}", exc_info=True)
-            stack_trace = traceback.format_exc()
             return {
                 "status": "error",
-                "message": f"An internal error has occurred: {str(e)}",
-                "stack_trace": stack_trace,
+                "message": "An internal error has occurred while testing the MCP server.",
             }
 
-    @router.post("/test/connection")
+    @router.post("/test/connection", dependencies=[Depends(user_api_key_auth)])
     async def test_connection(
         request: Request,
         new_mcp_server_request: NewMCPServerRequest,
+        user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
     ):
         """
         Test if we can connect to the provided MCP server before adding it
