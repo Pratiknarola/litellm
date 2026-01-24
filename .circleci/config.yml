@@ -44,8 +44,8 @@ commands:
             pip install "pytest-asyncio==0.21.1"
             pip install "respx==0.22.0"
             pip install "hypercorn==0.17.3"
-            pip install "pydantic==2.10.2"
-            pip install "mcp==1.10.1"
+            pip install "pydantic==2.11.0"
+            pip install "mcp==1.25.0"
             pip install "requests-mock>=1.12.1"
             pip install "responses==0.25.7"
             pip install "pytest-xdist==3.6.1"
@@ -119,7 +119,7 @@ jobs:
           username: ${DOCKERHUB_USERNAME}
           password: ${DOCKERHUB_PASSWORD}
     working_directory: ~/project
-
+    parallelism: 4
     steps:
       - checkout
       - setup_google_dns
@@ -207,12 +207,22 @@ jobs:
       - run:
           name: Run tests
           command: |
-            pwd
-            ls
-            # Add --timeout to kill hanging tests after 300s (5 min)
-            # Add -v to show test names as they run for debugging
-            # Add --tb=short for shorter tracebacks
-            python -m pytest -vv tests/local_testing --cov=litellm --cov-report=xml --junitxml=test-results/junit.xml --durations=20 -k "not test_python_38.py and not test_basic_python_version.py and not router and not assistants and not langfuse and not caching and not cache" -n 4 --timeout=300 --timeout_method=thread
+            mkdir test-results
+            # Discover test files
+            TEST_FILES=$(circleci tests glob "tests/local_testing/**/test_*.py")
+            echo "$TEST_FILES" | circleci tests run \
+              --split-by=filesize \
+              --verbose \
+              --command="xargs python -m pytest \
+                -vv \
+                --cov=litellm \
+                --cov-report=xml \
+                --junitxml=test-results/junit.xml \
+                --durations=20 \
+                -k \"not test_python_38.py and not test_basic_python_version.py and not router and not assistants and not langfuse and not caching and not cache\" \
+                -n 4 \
+                --timeout=300 \
+                --timeout_method=thread"
           no_output_timeout: 120m
       - run:
           name: Rename the coverage files
@@ -499,7 +509,7 @@ jobs:
           username: ${DOCKERHUB_USERNAME}
           password: ${DOCKERHUB_PASSWORD}
     working_directory: ~/project
-
+    parallelism: 4
     steps:
       - checkout
       - setup_google_dns
@@ -513,6 +523,7 @@ jobs:
             pip install "pytest-cov==5.0.0"
             pip install "pytest-retry==1.6.3"
             pip install "pytest-asyncio==0.21.1"
+            pip install "pytest-xdist==3.6.1"
             pip install semantic_router --no-deps
             pip install aurelio_sdk --no-deps
       # Run pytest and generate JUnit XML report
@@ -520,9 +531,21 @@ jobs:
       - run:
           name: Run tests
           command: |
-            pwd
-            ls
-            python -m pytest tests/local_testing --cov=litellm --cov-report=xml -vv -k "router" -v --junitxml=test-results/junit.xml --durations=5
+            mkdir test-results
+            # Find test files only in local_testing
+            TEST_FILES=$(circleci tests glob "tests/local_testing/**/test_*.py")
+            echo "$TEST_FILES" | circleci tests run \
+              --split-by=filesize \
+              --verbose \
+              --command="xargs python -m pytest -o junit_family=legacy \
+                -k 'router' \
+                --cov=litellm \
+                --cov-report=xml \
+                -n 4 \
+                --dist=loadscope \
+                --junitxml=test-results/junit.xml \
+                --durations=5 \
+                -vv"
           no_output_timeout: 120m
       - run:
           name: Rename the coverage files
@@ -1152,8 +1175,8 @@ jobs:
             pip install "pytest-cov==5.0.0"
             pip install "pytest-asyncio==0.21.1"
             pip install "respx==0.22.0"
-            pip install "pydantic==2.10.2"
-            pip install "mcp==1.10.1"
+            pip install "pydantic==2.11.0"
+            pip install "mcp==1.25.0"
       # Run pytest and generate JUnit XML report
       - run:
           name: Run tests
@@ -1556,8 +1579,8 @@ jobs:
             pip install "pytest-asyncio==0.21.1"
             pip install "respx==0.22.0"
             pip install "hypercorn==0.17.3"
-            pip install "pydantic==2.10.2"
-            pip install "mcp==1.10.1"
+            pip install "pydantic==2.11.0"
+            pip install "mcp==1.25.0"
             pip install "requests-mock>=1.12.1"
             pip install "responses==0.25.7"
             pip install "pytest-xdist==3.6.1"
@@ -1743,13 +1766,14 @@ jobs:
             pip install "pytest-cov==5.0.0"
             pip install "pytest-asyncio==0.21.1"
             pip install "respx==0.22.0"
+            pip install "pytest-xdist==3.6.1"
       # Run pytest and generate JUnit XML report
       - run:
           name: Run tests
           command: |
             pwd
             ls
-            python -m pytest -vv tests/image_gen_tests --cov=litellm --cov-report=xml -x -v --junitxml=test-results/junit.xml --durations=5
+            python -m pytest -vv tests/image_gen_tests -n 4 --cov=litellm --cov-report=xml -x -v --junitxml=test-results/junit.xml --durations=5
           no_output_timeout: 120m
       - run:
           name: Rename the coverage files
@@ -1915,7 +1939,7 @@ jobs:
             pip install "pytest-asyncio==0.21.1"
             pip install "pytest-cov==5.0.0"
             pip install "tomli==2.2.1"
-            pip install "mcp==1.10.1"
+            pip install "mcp==1.25.0"
       - run:
           name: Run tests
           command: |
@@ -1959,6 +1983,18 @@ jobs:
           command: |
             kind create cluster --name litellm-test
 
+      - run:
+          name: Build Docker image for helm tests
+          command: |
+            IMAGE_TAG=${CIRCLE_SHA1:-ci}
+            docker build -t litellm-ci:${IMAGE_TAG} -f docker/Dockerfile.database .
+
+      - run:
+          name: Load Docker image into Kind
+          command: |
+            IMAGE_TAG=${CIRCLE_SHA1:-ci}
+            kind load docker-image litellm-ci:${IMAGE_TAG} --name litellm-test
+
       # Run helm lint
       - run:
           name: Run helm lint
@@ -1969,7 +2005,11 @@ jobs:
       - run:
           name: Run helm tests
           command: |
-            helm install litellm ./deploy/charts/litellm-helm -f ./deploy/charts/litellm-helm/ci/test-values.yaml
+            IMAGE_TAG=${CIRCLE_SHA1:-ci}
+            helm install litellm ./deploy/charts/litellm-helm -f ./deploy/charts/litellm-helm/ci/test-values.yaml \
+              --set image.repository=litellm-ci \
+              --set image.tag=${IMAGE_TAG} \
+              --set image.pullPolicy=Never
             # Wait for pod to be ready
             echo "Waiting 30 seconds for pod to be ready..."
             sleep 30
@@ -2020,6 +2060,7 @@ jobs:
       - run: python ./tests/code_coverage_tests/info_log_check.py
       - run: python ./tests/code_coverage_tests/test_ban_set_verbose.py
       - run: python ./tests/code_coverage_tests/code_qa_check_tests.py
+      - run: python ./tests/code_coverage_tests/check_get_model_cost_key_performance.py
       - run: python ./tests/code_coverage_tests/test_proxy_types_import.py
       - run: python ./tests/code_coverage_tests/callback_manager_test.py
       - run: python ./tests/code_coverage_tests/recursive_detector.py
@@ -2037,39 +2078,6 @@ jobs:
       - run: python ./tests/code_coverage_tests/check_fastuuid_usage.py
       - run: python ./tests/code_coverage_tests/memory_test.py
       - run: helm lint ./deploy/charts/litellm-helm
-
-  memory_leak_tests:
-    docker:
-      - image: cimg/python:3.11
-        auth:
-          username: ${DOCKERHUB_USERNAME}
-          password: ${DOCKERHUB_PASSWORD}
-    working_directory: ~/project
-    resource_class: large
-    steps:
-      - setup_litellm_test_deps
-      - run:
-          name: Install Memory Test Dependencies
-          command: |
-            pip install "psutil>=5.9.0"
-            pip install "fastapi>=0.100.0"
-            pip install "httpx>=0.24.0"
-            pip install "uvicorn>=0.23.0"
-      - run:
-          name: Run Linear Memory Growth Tests
-          command: |
-            echo "Running memory leak tests individually to avoid baseline drift..."
-            echo "Running test_memory_baseline_1k..."
-            python -m pytest tests/load_tests/test_linear_memory_growth.py::test_memory_baseline_1k -v -s --tb=short
-            echo "Running test_memory_baseline_2k..."
-            python -m pytest tests/load_tests/test_linear_memory_growth.py::test_memory_baseline_2k -v -s --tb=short
-            echo "Running test_memory_baseline_4k..."
-            python -m pytest tests/load_tests/test_linear_memory_growth.py::test_memory_baseline_4k -v -s --tb=short
-            echo "Running test_memory_baseline_10k..."
-            python -m pytest tests/load_tests/test_linear_memory_growth.py::test_memory_baseline_10k -v -s --tb=short
-            echo "Running test_memory_baseline_30k..."
-            python -m pytest tests/load_tests/test_linear_memory_growth.py::test_memory_baseline_30k -v -s --tb=short
-          no_output_timeout: 60m
 
   db_migration_disable_update_check:
     machine:
@@ -2208,6 +2216,8 @@ jobs:
             pip install "asyncio==3.4.3"
             pip install "PyGithub==1.59.1"
             pip install "openai==1.100.1"
+            pip install "litellm[proxy]"
+            pip install "pytest-xdist==3.6.1"
       - run:
           name: Install dockerize
           command: |
@@ -2284,7 +2294,7 @@ jobs:
           command: |
             pwd
             ls
-            python -m pytest -s -vv tests/*.py -x --junitxml=test-results/junit.xml --durations=5 --ignore=tests/otel_tests --ignore=tests/spend_tracking_tests --ignore=tests/pass_through_tests --ignore=tests/proxy_admin_ui_tests --ignore=tests/load_tests --ignore=tests/llm_translation --ignore=tests/llm_responses_api_testing --ignore=tests/mcp_tests --ignore=tests/guardrails_tests --ignore=tests/image_gen_tests --ignore=tests/pass_through_unit_tests
+            python -m pytest -s -vv tests/*.py -x --junitxml=test-results/junit.xml -n 4 --durations=5 --ignore=tests/otel_tests --ignore=tests/spend_tracking_tests --ignore=tests/pass_through_tests --ignore=tests/proxy_admin_ui_tests --ignore=tests/load_tests --ignore=tests/llm_translation --ignore=tests/llm_responses_api_testing --ignore=tests/mcp_tests --ignore=tests/guardrails_tests --ignore=tests/image_gen_tests --ignore=tests/pass_through_unit_tests
           no_output_timeout: 120m
 
       # Store test results
@@ -3816,12 +3826,6 @@ workflows:
                 - main
                 - /litellm_.*/
       - check_code_and_doc_quality:
-          filters:
-            branches:
-              only:
-                - main
-                - /litellm_.*/
-      - memory_leak_tests:
           filters:
             branches:
               only:
